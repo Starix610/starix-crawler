@@ -1,0 +1,21 @@
+package scheduler
+
+// Status 代表调度器状态的类型。
+type Status uint8
+
+const (
+	// SCHED_STATUS_UNINITIALIZED 代表未初始化的状态。
+	SCHED_STATUS_UNINITIALIZED Status = 0
+	// SCHED_STATUS_INITIALIZING 代表正在初始化的状态。
+	SCHED_STATUS_INITIALIZING Status = 1
+	// SCHED_STATUS_INITIALIZED 代表已初始化的状态。
+	SCHED_STATUS_INITIALIZED Status = 2
+	// SCHED_STATUS_STARTING 代表正在启动的状态。
+	SCHED_STATUS_STARTING Status = 3
+	// SCHED_STATUS_STARTED 代表已启动的状态。
+	SCHED_STATUS_STARTED Status = 4
+	// SCHED_STATUS_STOPPING 代表正在停止的状态。
+	SCHED_STATUS_STOPPING Status = 5
+	// SCHED_STATUS_STOPPED 代表已停止的状态。
+	SCHED_STATUS_STOPPED Status = 6
+)
