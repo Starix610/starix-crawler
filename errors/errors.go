@@ -9,7 +9,6 @@ import (
 type CrawlerError interface {
 	// 获取错误类型
 	Type() ErrorType
-
 	// 获取错误信息
 	Error() string
 }

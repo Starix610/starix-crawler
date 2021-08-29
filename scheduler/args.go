@@ -85,6 +85,21 @@ type ModuleArgs struct {
 	Pipelines []module.Pipeline
 }
 
+// ModuleArgsSummary 代表组件相关的参数容器的摘要类型。
+type ModuleArgsSummary struct {
+	DownloaderListSize int `json:"downloader_list_size"`
+	AnalyzerListSize   int `json:"analyzer_list_size"`
+	PipelineListSize   int `json:"pipeline_list_size"`
+}
+
+func (args *ModuleArgs) Summary() ModuleArgsSummary {
+	return ModuleArgsSummary{
+		DownloaderListSize: len(args.Downloaders),
+		AnalyzerListSize:   len(args.Analyzers),
+		PipelineListSize:   len(args.Pipelines),
+	}
+}
+
 // Check 用于当前参数容器的有效性
 func (args *ModuleArgs) Check() error {
 	if len(args.Downloaders) == 0 {

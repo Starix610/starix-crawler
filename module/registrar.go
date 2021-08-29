@@ -1,5 +1,11 @@
 package module
 
+import (
+	"fmt"
+	"starix-crawler/errors"
+	"sync"
+)
+
 // Registrar 代表组件注册器的接口。
 type Registrar interface {
 	// Register 用于注册组件实例。
@@ -15,4 +21,108 @@ type Registrar interface {
 	GetAll() map[MID]Module
 	// Clear 会清除所有的组件注册记录。
 	Clear()
+}
+
+// myRegistrar 代表组件注册器的实现类型。
+type myRegistrar struct {
+	// moduleTypeMap 代表组件类型与对应组件实例的映射。
+	moduleTypeMap map[Type]map[MID]Module
+	// rwlock 代表组件注册专用读写锁。
+	rwlock sync.RWMutex
+}
+
+// NewRegistrar 用于创建一个组件注册器的实例。
+func NewRegistrar() Registrar {
+	return &myRegistrar{
+		moduleTypeMap: map[Type]map[MID]Module{},
+	}
+}
+
+func (registrar *myRegistrar) Register(module Module) (bool, error) {
+	if module == nil {
+		return false, errors.NewIllegalParameterError("nil module instance")
+	}
+	mid := module.ID()
+	parts, err := SplitMID(mid)
+	if err != nil {
+		return false, err
+	}
+	moduleType := legalLetterTypeMap[parts[0]]
+	if !CheckType(moduleType, module) {
+		return false, errors.NewIllegalParameterError(fmt.Sprintf("incorrect module type: %s", moduleType))
+	}
+	registrar.rwlock.Lock()
+	defer registrar.rwlock.Unlock()
+	modules := registrar.moduleTypeMap[moduleType]
+	if modules == nil {
+		modules = map[MID]Module{}
+	}
+	if _, ok := modules[mid]; ok {
+		return false, nil
+	}
+	modules[mid] = module
+	registrar.moduleTypeMap[moduleType] = modules
+	return true, err
+}
+
+func (registrar *myRegistrar) Unregister(mid MID) (bool, error) {
+	parts, err := SplitMID(mid)
+	if err != nil {
+		return false, err
+	}
+	moduleType := legalLetterTypeMap[parts[0]]
+	registrar.rwlock.Lock()
+	defer registrar.rwlock.Unlock()
+	if modules, ok := registrar.moduleTypeMap[moduleType]; ok {
+		if _, ok := modules[mid]; ok {
+			delete(modules, mid)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// Get 用于获取一个指定类型的组件的实例。
+// 本函数会基于负载均衡策略返回实例（返回评分最低的组件实例）
+func (registrar *myRegistrar) Get(moduleType Type) (Module, error) {
+	modules, err := registrar.GetAllByType(moduleType)
+	if err != nil {
+		return nil, err
+	}
+	minScore := uint64(0)
+	var selectedModule Module
+	for _, module := range modules {
+		SetScore(module)
+		if minScore == 0 || module.Score() < minScore {
+			selectedModule = module
+			minScore = module.Score()
+		}
+	}
+	return selectedModule, nil
+}
+
+// GetAllByType 用于获取指定类型的所有组件实例。
+func (registrar *myRegistrar) GetAllByType(moduleType Type) (map[MID]Module, error) {
+	if !LegalType(moduleType) {
+		return nil, errors.NewIllegalParameterError(fmt.Sprintf("illegal module type: %s", moduleType))
+	}
+	registrar.rwlock.RLock()
+	defer registrar.rwlock.RUnlock()
+	modules := registrar.moduleTypeMap[moduleType]
+	if len(modules) == 0 {
+		return nil, ErrNotFoundModuleInstance
+	}
+	result := map[MID]Module{}
+	for mid, module := range modules {
+		result[mid] = module
+	}
+	return result, nil
+}
+
+func (registrar *myRegistrar) GetAll() map[MID]Module {
+	panic("implement me")
+}
+
+func (registrar *myRegistrar) Clear() {
+	panic("implement me")
 }

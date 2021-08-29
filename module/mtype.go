@@ -33,3 +33,18 @@ func LegalType(moduleType Type) bool {
 	}
 	return false
 }
+
+func CheckType(moduleType Type, module Module) bool {
+	if moduleType == "" || module == nil {
+		return false
+	}
+	switch module.(type) {
+	case Downloader:
+		return moduleType == TYPE_DOWNLOADER
+	case Analyzer:
+		return moduleType == TYPE_ANALYZER
+	case Pipeline:
+		return moduleType == TYPE_PIPELINE
+	}
+	return false
+}
