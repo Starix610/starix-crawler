@@ -2,10 +2,13 @@ package scheduler
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"helper/log"
 	"net/http"
 	"starix-crawler/module"
 	"starix-crawler/tookit/buffer"
+	"starix-crawler/tookit/cmap"
 	"sync"
 )
 
@@ -73,6 +76,7 @@ func NewScheduler() Scheduler {
 }
 
 func (sched *myScheduler) Init(requestArgs RequestArgs, dataArgs DataArgs, moduleArgs ModuleArgs) (err error) {
+	sched.ctx.Done()
 	//检查状态
 	logger.Info("[Scheduler] Check status for initialization...")
 	var oldStatus Status
@@ -160,10 +164,61 @@ func (sched *myScheduler) checkAndSetStatus(wantedStatus Status) (oldStatus Stat
 //    5.处于未启动状态时，不能变为正在停止状态
 func checkStatus(currentStatus Status, wantedStatus Status, lock sync.Locker) (err error) {
 	//省略部分代码
+	return
 }
 
 func (sched *myScheduler) Start(firstHTTPReq *http.Request) (err error) {
-	panic("implement me")
+	defer func() {
+		if p := recover(); p != nil {
+			errMsg := fmt.Sprintf("Fatal scheduler error: %sched", p)
+			logger.Fatal(errMsg)
+			err = genError(errMsg)
+		}
+	}()
+	logger.Info("[Scheduler] Start scheduler...")
+	//检查状态
+	logger.Info("[Scheduler] Check status for start...")
+	var oldStatus Status
+	oldStatus, err = sched.checkAndSetStatus(SCHED_STATUS_STARTING)
+	if err != nil {
+		return
+	}
+	defer func() {
+		sched.statusLock.Lock()
+		if err != nil {
+			sched.status = oldStatus
+		} else {
+			sched.status = SCHED_STATUS_STARTED
+		}
+		sched.statusLock.Unlock()
+	}()
+	logger.Info("[Scheduler] Check first HTTP request...")
+	if firstHTTPReq == nil {
+		err = genParameterError("nil first HTTP request")
+		return
+	}
+	// 获得首次请求的主域名，并将其添加到可接受的主域名的字典。
+	logger.Info("[Scheduler] Get the primary domain...")
+	logger.Infof("-- Host: %s", firstHTTPReq.Host)
+	var primaryDomain string
+	primaryDomain, err = getPrimaryDomain(firstHTTPReq.Host)
+	if err != nil {
+		return
+	}
+	logger.Infof("-- Primary domain: %s", primaryDomain)
+	sched.acceptedDomainMap.Put(primaryDomain, struct{}{})
+	// 开始调度数据和组件。
+	if err = sched.checkBufferPoolForStart(); err != nil {
+		return
+	}
+	sched.download()
+	sched.analyze()
+	sched.pick()
+	logger.Info("[Scheduler] Scheduler has been started.")
+	// 放入第一个请求。
+	firstReq := module.NewRequest(firstHTTPReq, 0)
+	sched.sendReq(firstReq)
+	return nil
 }
 
 func (sched *myScheduler) Stop() (err error) {
@@ -184,4 +239,36 @@ func (sched *myScheduler) Idle() bool {
 
 func (sched *myScheduler) Summary() SchedSummary {
 	panic("implement me")
+}
+
+// download 会从请求缓冲池取出请求并下载，然后把得到的响应放入响应缓冲池。
+func (sched *myScheduler) download() {
+	go func() {
+		for {
+			if sched.canceled() {
+				break
+			}
+			datum, err := sched.reqBufferPool.Get()
+			if err != nil {
+				logger.Warnln("The request buffer pool was closed. Break request reception.")
+				break
+			}
+			req, ok := datum.(*module.Request)
+			if !ok {
+				errMsg := fmt.Sprintf("incorrect request type: %T", datum)
+				sendError(errors.New(errMsg), "", sched.errorBufferPool)
+			}
+			sched.downloadOne(req)
+		}
+	}()
+}
+
+// canceled 用于判断调度器的上下文是否已被取消。
+func (sched *myScheduler) canceled() bool {
+	select {
+	case <-sched.ctx.Done():
+		return true
+	default:
+		return false
+	}
 }
