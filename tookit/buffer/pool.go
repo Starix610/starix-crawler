@@ -137,6 +137,7 @@ func (pool *myPool) putData(buf Buffer, datum interface{}, count *uint32, maxCou
 	}
 	// 若因缓冲器已满而未放入数据，就递增已满计数
 	*count++
+
 	// 如果缓冲器放入数据失败次数（已满计数）达到阈值
 	// 并且缓冲器数量未达到最大值
 	// 则尝试新增一个缓冲器加入缓冲池
@@ -184,20 +185,6 @@ func (pool *myPool) getData(buf Buffer, count *uint32, maxCount uint32) (datum i
 		return nil, ErrClosedBufferPool
 	}
 	defer func() {
-		// 当获取数据失败次数达到阈值，同时当前缓冲器已空，且缓冲器数量大于1，
-		// 则减少缓冲器数量（直接关闭当前缓冲器，并且不归还）
-		if *count >= maxCount && buf.Len() == 0 && pool.bufferNumber > 1 {
-			pool.rwlock.Lock()
-			// 双检锁
-			if *count >= maxCount && buf.Len() == 0 && pool.bufferNumber > 1 {
-				buf.Close()
-				atomic.AddUint32(&pool.bufferNumber, ^uint32(0))
-			}
-			pool.rwlock.Unlock()
-			*count = 0
-			return
-		}
-
 		// 使用读锁，避免并发情况下有可能向已关闭的buffCh发送值
 		// 如主动调用Close()方法与归还缓冲器这两个操作并发的场景
 		// 此处使用读锁的前提是Close方法内使用了写锁
@@ -223,6 +210,16 @@ func (pool *myPool) getData(buf Buffer, count *uint32, maxCount uint32) (datum i
 
 	// err和datum同时为空，说明缓冲器已空，更新计数
 	*count++
+
+	// TODO: 这部分逻辑原来是放在defer中，现在移动到这，正确性待验证
+	// 当获取数据失败次数达到阈值，同时当前缓冲器已空，且缓冲器数量大于1，
+	// 则减少缓冲器数量（直接关闭当前缓冲器，并且不归还）
+	if *count >= maxCount && buf.Len() == 0 && pool.BufferNumber() > 1 {
+		buf.Close()
+		atomic.AddUint32(&pool.bufferNumber, ^uint32(0))
+		*count = 0
+		return
+	}
 	return
 }
 

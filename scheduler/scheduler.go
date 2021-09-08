@@ -141,7 +141,7 @@ func (sched *myScheduler) Init(requestArgs RequestArgs, dataArgs DataArgs, modul
 	return nil
 }
 
-// 用于状态检查，并在条件满足时设置.状态
+// 用于状态检查，并在条件满足时设置状态
 func (sched *myScheduler) checkAndSetStatus(wantedStatus Status) (oldStatus Status, err error) {
 	sched.statusLock.Lock()
 	defer sched.statusLock.Unlock()
@@ -261,6 +261,121 @@ func (sched *myScheduler) download() {
 			sched.downloadOne(req)
 		}
 	}()
+}
+
+// downloadOne 会根据给定的请求执行下载并把响应放入响应缓冲池。
+func (sched *myScheduler) downloadOne(req *module.Request) {
+	if req == nil {
+		return
+	}
+	if sched.canceled() {
+		return
+	}
+	m, err := sched.registrar.Get(module.TYPE_DOWNLOADER)
+	if err != nil || m == nil {
+		errMsg := fmt.Sprintf("couldn't get a downloader: %s", err)
+		sendError(errors.New(errMsg), "", sched.errorBufferPool)
+		// 失败则将请求放回请求缓冲此
+		sched.sendReq(req)
+		return
+	}
+	downloader, ok := m.(module.Downloader)
+	if !ok {
+		errMsg := fmt.Sprintf("incorrect downloader type: %T (MID: %s)", m, m.ID())
+		sendError(errors.New(errMsg), m.ID(), sched.errorBufferPool)
+		sched.sendReq(req)
+		return
+	}
+	resp, err := downloader.Download(req)
+	if resp != nil {
+		sendResp(resp, sched.respBufferPool)
+	}
+	if err != nil {
+		sendError(err, m.ID(), sched.errorBufferPool)
+	}
+}
+
+// sendResp 会向响应缓冲池发送响应。
+func sendResp(resp *module.Response, respBufferPool buffer.Pool) bool {
+	if resp == nil || respBufferPool == nil || respBufferPool.Closed() {
+		return false
+	}
+	go func(resp *module.Response) {
+		if err := respBufferPool.Put(resp); err != nil {
+			logger.Warnln("The response buffer pool was closed. Ignore response sending.")
+		}
+	}(resp)
+	return true
+}
+
+// analyze 会从响应缓冲池取出响应并解析，
+// 然后把得到的条目或请求放入相应的缓冲池。
+func (sched *myScheduler) analyze() {
+	go func() {
+		for {
+			if sched.canceled() {
+				break
+			}
+			datum, err := sched.respBufferPool.Get()
+			if err != nil {
+				logger.Warnln("The response buffer pool was closed. Break response reception.")
+				break
+			}
+			resp, ok := datum.(*module.Response)
+			if !ok {
+				errMsg := fmt.Sprintf("incorrect response type: %T", datum)
+				sendError(errors.New(errMsg), "", sched.errorBufferPool)
+			}
+			sched.analyzeOne(resp)
+		}
+	}()
+}
+
+// analyzeOne 会根据给定的响应执行解析并把结果放入相应的缓冲池。
+func (sched *myScheduler) analyzeOne(resp *module.Response) {
+	if resp == nil {
+		return
+	}
+	if sched.canceled() {
+		return
+	}
+	m, err := sched.registrar.Get(module.TYPE_ANALYZER)
+	if err != nil || m == nil {
+		errMsg := fmt.Sprintf("couldn't get an analyzer: %s", err)
+		sendError(errors.New(errMsg), "", sched.errorBufferPool)
+		sendResp(resp, sched.respBufferPool)
+		return
+	}
+	analyzer, ok := m.(module.Analyzer)
+	if !ok {
+		errMsg := fmt.Sprintf("incorrect analyzer type: %T (MID: %s)",
+			m, m.ID())
+		sendError(errors.New(errMsg), m.ID(), sched.errorBufferPool)
+		sendResp(resp, sched.respBufferPool)
+		return
+	}
+	dataList, errs := analyzer.Analyze(resp)
+	if dataList != nil {
+		for _, data := range dataList {
+			if data == nil {
+				continue
+			}
+			switch d := data.(type) {
+			case *module.Request:
+				sched.sendReq(d)
+			case module.Item:
+				sendItem(d, sched.itemBufferPool)
+			default:
+				errMsg := fmt.Sprintf("Unsupported data type %T! (data: %#v)", d, d)
+				sendError(errors.New(errMsg), m.ID(), sched.errorBufferPool)
+			}
+		}
+	}
+	if errs != nil {
+		for _, err := range errs {
+			sendError(err, m.ID(), sched.errorBufferPool)
+		}
+	}
 }
 
 // canceled 用于判断调度器的上下文是否已被取消。
