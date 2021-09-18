@@ -9,6 +9,7 @@ import (
 	"starix-crawler/module"
 	"starix-crawler/tookit/buffer"
 	"starix-crawler/tookit/cmap"
+	"strings"
 	"sync"
 )
 
@@ -230,11 +231,49 @@ func (sched *myScheduler) Status() Status {
 }
 
 func (sched *myScheduler) ErrorChan() <-chan error {
-	panic("implement me")
+	errBufPool := sched.errorBufferPool
+	errCh := make(chan error, errBufPool.BufferCap())
+	go func(errBufPool buffer.Pool, errCh chan error) {
+		for {
+			if sched.canceled() {
+				close(errCh)
+				break
+			}
+			datum, err := errBufPool.Get()
+			if err != nil {
+				logger.Warnln("[ErrorChan] The error buffer pool was closed. Break error reception.")
+				close(errCh)
+				break
+			}
+			err, ok := datum.(error)
+			if !ok {
+				errMsg := fmt.Sprintf("incorrect error type: %T", datum)
+				sendError(errors.New(errMsg), "", sched.errorBufferPool)
+				continue
+			}
+			if sched.canceled() {
+				close(errCh)
+				break
+			}
+			errCh <- err
+		}
+	}(errBufPool, errCh)
+	return errCh
 }
 
 func (sched *myScheduler) Idle() bool {
-	panic("implement me")
+	moduleMap := sched.registrar.GetAll()
+	for _, module := range moduleMap {
+		if module.HandlingNumber() > 0 {
+			return false
+		}
+	}
+	if sched.reqBufferPool.Total() > 0 ||
+		sched.respBufferPool.Total() > 0 ||
+		sched.itemBufferPool.Total() > 0 {
+		return false
+	}
+	return true
 }
 
 func (sched *myScheduler) Summary() SchedSummary {
@@ -250,7 +289,7 @@ func (sched *myScheduler) download() {
 			}
 			datum, err := sched.reqBufferPool.Get()
 			if err != nil {
-				logger.Warnln("The request buffer pool was closed. Break request reception.")
+				logger.Warnln("[download] The request buffer pool was closed. Break request reception.")
 				break
 			}
 			req, ok := datum.(*module.Request)
@@ -302,7 +341,7 @@ func sendResp(resp *module.Response, respBufferPool buffer.Pool) bool {
 	}
 	go func(resp *module.Response) {
 		if err := respBufferPool.Put(resp); err != nil {
-			logger.Warnln("The response buffer pool was closed. Ignore response sending.")
+			logger.Warnln("[sendResp] The response buffer pool was closed. Ignore response sending.")
 		}
 	}(resp)
 	return true
@@ -318,7 +357,7 @@ func (sched *myScheduler) analyze() {
 			}
 			datum, err := sched.respBufferPool.Get()
 			if err != nil {
-				logger.Warnln("The response buffer pool was closed. Break response reception.")
+				logger.Warnln("[analyze] The response buffer pool was closed. Break response reception.")
 				break
 			}
 			resp, ok := datum.(*module.Response)
@@ -376,6 +415,116 @@ func (sched *myScheduler) analyzeOne(resp *module.Response) {
 			sendError(err, m.ID(), sched.errorBufferPool)
 		}
 	}
+}
+
+// pick 会从条目缓冲池取出条目并处理。
+func (sched *myScheduler) pick() {
+	go func() {
+		for {
+			if sched.canceled() {
+				break
+			}
+			datum, err := sched.itemBufferPool.Get()
+			if err != nil {
+				logger.Warnln("[pick] The item buffer pool was closed. Break item reception.")
+				break
+			}
+			item, ok := datum.(module.Item)
+			if !ok {
+				errMsg := fmt.Sprintf("incorrect item type: %T", datum)
+				sendError(errors.New(errMsg), "", sched.errorBufferPool)
+			}
+			sched.pickOne(item)
+		}
+	}()
+}
+
+// pickOne 会处理给定的条目。
+func (sched *myScheduler) pickOne(item module.Item) {
+	if sched.canceled() {
+		return
+	}
+	m, err := sched.registrar.Get(module.TYPE_PIPELINE)
+	if err != nil || m == nil {
+		errMsg := fmt.Sprintf("couldn't get a pipeline: %s", err)
+		sendError(errors.New(errMsg), "", sched.errorBufferPool)
+		sendItem(item, sched.itemBufferPool)
+		return
+	}
+	pipeline, ok := m.(module.Pipeline)
+	if !ok {
+		errMsg := fmt.Sprintf("incorrect pipeline type: %T (MID: %s)", m, m.ID())
+		sendError(errors.New(errMsg), m.ID(), sched.errorBufferPool)
+		sendItem(item, sched.itemBufferPool)
+		return
+	}
+	errs := pipeline.Send(item)
+	if errs != nil {
+		for _, err := range errs {
+			sendError(err, m.ID(), sched.errorBufferPool)
+		}
+	}
+}
+
+// sendItem 会向条目缓冲池发送条目。
+func sendItem(item module.Item, itemBufferPool buffer.Pool) bool {
+	if item == nil || itemBufferPool == nil || itemBufferPool.Closed() {
+		return false
+	}
+	go func(item module.Item) {
+		if err := itemBufferPool.Put(item); err != nil {
+			logger.Warnln("[sendItem] The item buffer pool was closed. Ignore item sending.")
+		}
+	}(item)
+	return true
+}
+
+// sendReq会向请求缓冲池发送请求。
+//不符合要求的请求会被过滤掉
+func (sched *myScheduler) sendReq(req *module.Request) bool {
+	if req == nil {
+		return false
+	}
+	httpReq := req.HttpReq()
+	if httpReq == nil {
+		logger.Warnln("[sendReq] Ignore the request! Its HTTP request is invalid!")
+		return false
+	}
+	reqURL := httpReq.URL
+	if reqURL == nil {
+		logger.Warnln("[sendReq] Ignore the request! Its URL is invalid!")
+		return false
+	}
+	scheme := strings.ToLower(reqURL.Scheme)
+	if scheme != "http" && scheme != "https" {
+		logger.Warnf("[sendReq] Ignore the request! Its URL scheme is %q, but should be %q or %q. (URL: %s)", scheme, "http", "https", reqURL)
+		return false
+	}
+	if v := sched.urlMap.Get(reqURL.String()); v != nil {
+		logger.Warnf("[sendReq] Ignore the request! Its URL is repeated. (URL: %s)", reqURL)
+		return false
+	}
+	// 限制爬取广度范围（通过已设置的域名列表限制）
+	pd, _ := getPrimaryDomain(httpReq.Host)
+	if sched.acceptedDomainMap.Get(pd) == nil {
+		// 爬取到特定域名直接panic，这个暂时应该用不上，不配置
+		if pd == "bing.net" {
+			panic(httpReq.URL)
+		}
+		logger.Warnf("[sendReq] Ignore the request! Its host %q is not in accepted primary domain map.(URL: %s)", httpReq.Host, reqURL)
+		return false
+	}
+	// 限制爬取深度范围（通过请求深度限制）
+	if req.Depth() > sched.maxDepth {
+		logger.Warnf("[sendReq] Ignore the request! Its depth %d is greater than %d.(URL: %s)", req.Depth(), sched.maxDepth, reqURL)
+		return false
+	}
+	go func(req *module.Request) {
+		if err := sched.reqBufferPool.Put(req); err != nil {
+			logger.Warnln("[sendReq] The request buffer pool was closed. Ignore request sending.")
+		}
+	}(req)
+
 }
 
 // canceled 用于判断调度器的上下文是否已被取消。

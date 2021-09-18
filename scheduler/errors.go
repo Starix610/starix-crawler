@@ -52,7 +52,7 @@ func sendError(err error, mid module.MID, errorBufferPool buffer.Pool) bool {
 	}
 	go func(crawlerError errors.CrawlerError) {
 		if err := errorBufferPool.Put(crawlerError); err != nil {
-			logger.Warnln("The error buffer pool was closed. Ignore error sending.")
+			logger.Warnln("[sendError] The error buffer pool was closed. Ignore error sending.")
 		}
 	}(crawlerError)
 	return true
