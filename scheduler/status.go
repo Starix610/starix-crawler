@@ -1,5 +1,10 @@
 package scheduler
 
+import (
+	"fmt"
+	"sync"
+)
+
 // Status 代表调度器状态的类型。
 type Status uint8
 
@@ -19,3 +24,84 @@ const (
 	// SCHED_STATUS_STOPPED 代表已停止的状态。
 	SCHED_STATUS_STOPPED Status = 6
 )
+
+// checkStatus 用于状态检查。
+// 参数 currentStatus 代表当前状态。
+// 参数 wantedStatus 代表想要的状态。
+// 检查规则：
+//    1.处于正在初始化、正在启动或正在停止状态时，不能从外部改变状态。
+//    2.想要的状态只能是正在初始化、正在启动或正在停止状态中的一个。
+//    3.处于未初始化状态时，不能变为正在启动或正在停止状态。
+//    4.处于已启动状态时，不能变为正在初始化或正在启动状态。
+//    5.非已启动状态时，不能变为正在停止状态
+func checkStatus(currentStatus Status, wantedStatus Status, lock sync.Locker) (err error) {
+	if lock != nil {
+		lock.Lock()
+		defer lock.Unlock()
+	}
+	// 1.处于正在初始化、正在启动或正在停止状态时，不能从外部改变状态。
+	switch currentStatus {
+	case SCHED_STATUS_INITIALIZING:
+		err = genError("the scheduler is being initialized!")
+	case SCHED_STATUS_STARTING:
+		err = genError("the scheduler is being started!")
+	case SCHED_STATUS_STOPPING:
+		err = genError("the scheduler is being stopped!")
+	}
+	if err != nil {
+		return
+	}
+	// 2.想要的状态只能是正在初始化、正在启动或正在停止状态中的一个。
+	switch wantedStatus {
+	case SCHED_STATUS_INITIALIZING:
+		// 处于已启动状态时，不能变为正在初始化状态
+		if currentStatus == SCHED_STATUS_STARTED {
+			err = genError("the scheduler has been started! Change status to [initializing] fail")
+		}
+	case SCHED_STATUS_STARTING:
+		switch currentStatus {
+		// 处于未初始化状态时，不能变为正在启动状态
+		case SCHED_STATUS_UNINITIALIZED:
+			err = genError("the scheduler has not been initialized! Change status to [starting] fail")
+		// 处于已启动状态时，不能变为正在启动状态
+		case SCHED_STATUS_STARTED:
+			err = genError("the scheduler has been started! Change status to [starting] fail")
+		}
+	case SCHED_STATUS_STOPPING:
+		// 处于未初始化状态时，不能变为正在停止状态。
+		if currentStatus == SCHED_STATUS_UNINITIALIZED {
+			err = genError("the scheduler has not yet been initialized! Change status to [stopping] fail")
+			return
+		}
+		// 其他非已启动状态，都不能变为正在停止状态
+		if currentStatus != SCHED_STATUS_STARTED {
+			err = genError("the scheduler has not been started! Change status to [stopping] fail")
+		}
+	default:
+		errMsg := fmt.Sprintf("unsupported wanted status for check! (wantedStatus: %d)", wantedStatus)
+		err = genError(errMsg)
+	}
+	return
+}
+
+// GetStatusDescription 用于获取状态的文字描述。
+func GetStatusDescription(status Status) string {
+	switch status {
+	case SCHED_STATUS_UNINITIALIZED:
+		return "uninitialized"
+	case SCHED_STATUS_INITIALIZING:
+		return "initializing"
+	case SCHED_STATUS_INITIALIZED:
+		return "initialized"
+	case SCHED_STATUS_STARTING:
+		return "starting"
+	case SCHED_STATUS_STARTED:
+		return "started"
+	case SCHED_STATUS_STOPPING:
+		return "stopping"
+	case SCHED_STATUS_STOPPED:
+		return "stopped"
+	default:
+		return "unknown"
+	}
+}

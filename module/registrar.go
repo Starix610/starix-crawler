@@ -92,6 +92,7 @@ func (registrar *myRegistrar) Get(moduleType Type) (Module, error) {
 	minScore := uint64(0)
 	var selectedModule Module
 	for _, module := range modules {
+		// 计算组件评分
 		SetScore(module)
 		if minScore == 0 || module.Score() < minScore {
 			selectedModule = module
@@ -112,6 +113,7 @@ func (registrar *myRegistrar) GetAllByType(moduleType Type) (map[MID]Module, err
 	if len(modules) == 0 {
 		return nil, ErrNotFoundModuleInstance
 	}
+	// 为了不被外部修改，返回一个新的副本
 	result := map[MID]Module{}
 	for mid, module := range modules {
 		result[mid] = module
@@ -120,9 +122,19 @@ func (registrar *myRegistrar) GetAllByType(moduleType Type) (map[MID]Module, err
 }
 
 func (registrar *myRegistrar) GetAll() map[MID]Module {
-	panic("implement me")
+	result := map[MID]Module{}
+	registrar.rwlock.RLock()
+	defer registrar.rwlock.RUnlock()
+	for _, modules := range registrar.moduleTypeMap {
+		for mid, module := range modules {
+			result[mid] = module
+		}
+	}
+	return result
 }
 
 func (registrar *myRegistrar) Clear() {
-	panic("implement me")
+	registrar.rwlock.Lock()
+	defer registrar.rwlock.Unlock()
+	registrar.moduleTypeMap = map[Type]map[MID]Module{}
 }

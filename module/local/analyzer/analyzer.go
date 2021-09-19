@@ -45,7 +45,9 @@ func New(mid module.MID, respParsers []module.ParseResponse, scoreCalculator mod
 }
 
 func (analyzer *myAnalyzer) RespParsers() []module.ParseResponse {
-	panic("implement me")
+	parsers := make([]module.ParseResponse, len(analyzer.respParsers))
+	copy(parsers, analyzer.respParsers)
+	return parsers
 }
 
 func (analyzer *myAnalyzer) Analyze(resp *module.Response) (dataList []module.Data, errorList []error) {

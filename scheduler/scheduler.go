@@ -77,7 +77,6 @@ func NewScheduler() Scheduler {
 }
 
 func (sched *myScheduler) Init(requestArgs RequestArgs, dataArgs DataArgs, moduleArgs ModuleArgs) (err error) {
-	sched.ctx.Done()
 	//检查状态
 	logger.Info("[Scheduler] Check status for initialization...")
 	var oldStatus Status
@@ -118,6 +117,7 @@ func (sched *myScheduler) Init(requestArgs RequestArgs, dataArgs DataArgs, modul
 	if sched.registrar == nil {
 		sched.registrar = module.NewRegistrar()
 	} else {
+		// 如果已存在组件注册器，则清空已注册组件
 		sched.registrar.Clear()
 	}
 	sched.maxDepth = requestArgs.MaxDepth
@@ -128,9 +128,13 @@ func (sched *myScheduler) Init(requestArgs RequestArgs, dataArgs DataArgs, modul
 	}
 	logger.Infof("-- Accepted primary domains: %v", requestArgs.AcceptedDomains)
 
-	sched.urlMap, _ = cmap.NewConcurrentMap(16, nil)
+	if sched.urlMap, err = cmap.NewConcurrentMap(16, nil); err != nil {
+		return
+	}
 	logger.Infof("-- URL map: length: %d, concurrency: %d", sched.urlMap.Len(), sched.urlMap.Concurrency())
-	sched.initBufferPool(dataArgs)
+	if err = sched.initBufferPool(dataArgs); err != nil {
+		return
+	}
 	sched.resetContext()
 	sched.summary = newSchedSummary(requestArgs, dataArgs, moduleArgs, sched)
 	// 注册组件。
@@ -151,20 +155,6 @@ func (sched *myScheduler) checkAndSetStatus(wantedStatus Status) (oldStatus Stat
 	if err == nil {
 		sched.status = wantedStatus
 	}
-	return
-}
-
-// checkStatus 用于状态检查。
-// 参数 currentStatus 代表当前状态。
-// 参数 wantedStatus 代表想要的状态。
-// 检查规则：
-//    1.处于正在初始化、正在启动或正在停止状态时，不能从外部改变状态。
-//    2.想要的状态只能是正在初始化、正在启动或正在停止状态中的一个。
-//    3.处于未初始化状态时，不能变为正在启动或正在停止状态。
-//    4.处于已启动状态时，不能变为正在初始化或正在启动状态。
-//    5.处于未启动状态时，不能变为正在停止状态
-func checkStatus(currentStatus Status, wantedStatus Status, lock sync.Locker) (err error) {
-	//省略部分代码
 	return
 }
 
@@ -223,11 +213,38 @@ func (sched *myScheduler) Start(firstHTTPReq *http.Request) (err error) {
 }
 
 func (sched *myScheduler) Stop() (err error) {
-	panic("implement me")
+	logger.Info("[Scheduler] Stop scheduler...")
+	// 检查状态。
+	logger.Info("[Scheduler] Check status for stop...")
+	var oldStatus Status
+	oldStatus, err = sched.checkAndSetStatus(SCHED_STATUS_STOPPING)
+	defer func() {
+		sched.statusLock.Lock()
+		if err != nil {
+			sched.status = oldStatus
+		} else {
+			sched.status = SCHED_STATUS_STOPPED
+		}
+		sched.statusLock.Unlock()
+	}()
+	if err != nil {
+		return
+	}
+	sched.cancelFunc()
+	sched.reqBufferPool.Close()
+	sched.respBufferPool.Close()
+	sched.itemBufferPool.Close()
+	sched.errorBufferPool.Close()
+	logger.Info("[Scheduler] Scheduler has been stopped.")
+	return nil
 }
 
 func (sched *myScheduler) Status() Status {
-	panic("implement me")
+	var status Status
+	sched.statusLock.RLock()
+	status = sched.status
+	sched.statusLock.RUnlock()
+	return status
 }
 
 func (sched *myScheduler) ErrorChan() <-chan error {
@@ -277,7 +294,7 @@ func (sched *myScheduler) Idle() bool {
 }
 
 func (sched *myScheduler) Summary() SchedSummary {
-	panic("implement me")
+	return sched.summary
 }
 
 // download 会从请求缓冲池取出请求并下载，然后把得到的响应放入响应缓冲池。
@@ -524,7 +541,145 @@ func (sched *myScheduler) sendReq(req *module.Request) bool {
 			logger.Warnln("[sendReq] The request buffer pool was closed. Ignore request sending.")
 		}
 	}(req)
+	sched.urlMap.Put(reqURL.String(), struct{}{})
+	return true
+}
 
+// initBufferPool 用于按照给定的参数初始化缓冲池。
+// 如果某个缓冲池可用且未关闭，就先关闭该缓冲池。
+func (sched *myScheduler) initBufferPool(dataArgs DataArgs) (err error) {
+	// 初始化请求缓冲池。
+	if sched.reqBufferPool != nil && !sched.reqBufferPool.Closed() {
+		sched.reqBufferPool.Close()
+	}
+	if sched.reqBufferPool, err = buffer.NewPool(dataArgs.ReqBufferCap, dataArgs.ReqMaxBufferNumber); err != nil {
+		return
+	}
+	logger.Infof("-- Request buffer pool: bufferCap: %d, maxBufferNumber: %d",
+		sched.reqBufferPool.BufferCap(), sched.reqBufferPool.MaxBufferNumber())
+	// 初始化响应缓冲池。
+	if sched.respBufferPool != nil && !sched.respBufferPool.Closed() {
+		sched.respBufferPool.Close()
+	}
+	if sched.respBufferPool, err = buffer.NewPool(dataArgs.RespBufferCap, dataArgs.RespMaxBufferNumber); err != nil {
+		return
+	}
+	logger.Infof("-- Response buffer pool: bufferCap: %d, maxBufferNumber: %d",
+		sched.respBufferPool.BufferCap(), sched.respBufferPool.MaxBufferNumber())
+	// 初始化条目缓冲池。
+	if sched.itemBufferPool != nil && !sched.itemBufferPool.Closed() {
+		sched.itemBufferPool.Close()
+	}
+	if sched.itemBufferPool, err = buffer.NewPool(dataArgs.ItemBufferCap, dataArgs.ItemMaxBufferNumber); err != nil {
+		return
+	}
+	logger.Infof("-- Item buffer pool: bufferCap: %d, maxBufferNumber: %d",
+		sched.itemBufferPool.BufferCap(), sched.itemBufferPool.MaxBufferNumber())
+	// 初始化错误缓冲池。
+	if sched.errorBufferPool != nil && !sched.errorBufferPool.Closed() {
+		sched.errorBufferPool.Close()
+	}
+	if sched.errorBufferPool, err = buffer.NewPool(dataArgs.ErrorBufferCap, dataArgs.ErrorMaxBufferNumber); err != nil {
+		return
+	}
+	logger.Infof("-- Error buffer pool: bufferCap: %d, maxBufferNumber: %d",
+		sched.errorBufferPool.BufferCap(), sched.errorBufferPool.MaxBufferNumber())
+	return
+}
+
+// checkBufferPoolForStart 会检查缓冲池是否已为调度器的启动准备就绪。
+// 如果某个缓冲池不可用，就直接返回错误值报告此情况。
+// 如果某个缓冲池已关闭，就按照原先的参数重新初始化它。
+func (sched *myScheduler) checkBufferPoolForStart() (err error) {
+	// 检查请求缓冲池。
+	if sched.reqBufferPool == nil {
+		return genError("nil request buffer pool")
+	}
+	if sched.reqBufferPool.Closed() {
+		if sched.reqBufferPool, err = buffer.NewPool(sched.reqBufferPool.BufferCap(), sched.reqBufferPool.MaxBufferNumber()); err != nil {
+			return
+		}
+	}
+	// 检查响应缓冲池。
+	if sched.respBufferPool == nil {
+		return genError("nil response buffer pool")
+	}
+	if sched.respBufferPool.Closed() {
+		if sched.respBufferPool, err = buffer.NewPool(sched.respBufferPool.BufferCap(), sched.respBufferPool.MaxBufferNumber()); err != nil {
+			return
+		}
+	}
+	// 检查条目缓冲池。
+	if sched.itemBufferPool == nil {
+		return genError("nil item buffer pool")
+	}
+	if sched.itemBufferPool.Closed() {
+		if sched.itemBufferPool, err = buffer.NewPool(sched.itemBufferPool.BufferCap(), sched.itemBufferPool.MaxBufferNumber()); err != nil {
+			return
+		}
+	}
+	// 检查错误缓冲池。
+	if sched.errorBufferPool == nil {
+		return genError("nil error buffer pool")
+	}
+	if sched.errorBufferPool.Closed() {
+		if sched.errorBufferPool, err = buffer.NewPool(sched.errorBufferPool.BufferCap(), sched.errorBufferPool.MaxBufferNumber()); err != nil {
+			return
+		}
+	}
+	return
+}
+
+// resetContext 用于重置调度器的上下文。
+func (sched *myScheduler) resetContext() {
+	sched.ctx, sched.cancelFunc = context.WithCancel(context.Background())
+}
+
+// registerModules 会注册所有给定的组件。
+func (sched *myScheduler) registerModules(moduleArgs ModuleArgs) error {
+	for _, d := range moduleArgs.Downloaders {
+		if d == nil {
+			continue
+		}
+		ok, err := sched.registrar.Register(d)
+		if err != nil {
+			return genErrorByError(err)
+		}
+		if !ok {
+			errMsg := fmt.Sprintf("Couldn't register downloader instance with MID %q!", d.ID())
+			return genError(errMsg)
+		}
+	}
+	logger.Infof("All downloads have been registered. (number: %d)", len(moduleArgs.Downloaders))
+	for _, a := range moduleArgs.Analyzers {
+		if a == nil {
+			continue
+		}
+		ok, err := sched.registrar.Register(a)
+		if err != nil {
+			return genErrorByError(err)
+		}
+		if !ok {
+			errMsg := fmt.Sprintf("Couldn't register analyzer instance with MID %q!", a.ID())
+			return genError(errMsg)
+		}
+	}
+	logger.Infof("All analyzers have been registered. (number: %d)", len(moduleArgs.Analyzers))
+	for _, p := range moduleArgs.Pipelines {
+		if p == nil {
+			continue
+		}
+		ok, err := sched.registrar.Register(p)
+		if err != nil {
+			return genErrorByError(err)
+		}
+		if !ok {
+			errMsg := fmt.Sprintf("Couldn't register pipeline instance with MID %q!", p.ID())
+			return genError(errMsg)
+		}
+	}
+	logger.Infof("All pipelines have been registered. (number: %d)", len(moduleArgs.Pipelines))
+	return nil
 }
 
 // canceled 用于判断调度器的上下文是否已被取消。

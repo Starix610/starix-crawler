@@ -8,7 +8,7 @@ const (
 	TYPE_DOWNLOADER Type = "downloader"
 	//分析器
 	TYPE_ANALYZER Type = "analyzer"
-	//棗目处理管道
+	//条目处理管道
 	TYPE_PIPELINE Type = "pipeline"
 )
 
@@ -47,4 +47,15 @@ func CheckType(moduleType Type, module Module) bool {
 		return moduleType == TYPE_PIPELINE
 	}
 	return false
+}
+
+// GetType 用于获取组件的类型。
+// 若给定的组件ID不合法则第一个结果值会是false。
+func GetType(mid MID) (bool, Type) {
+	parts, err := SplitMID(mid)
+	if err != nil {
+		return false, ""
+	}
+	mt, ok := legalLetterTypeMap[parts[0]]
+	return ok, mt
 }

@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"encoding/json"
 	"sort"
 	"starix-crawler/module"
 	"starix-crawler/tookit/buffer"
@@ -46,11 +47,30 @@ func newSchedSummary(
 }
 
 func (ss *mySchedSummary) Struct() SummaryStruct {
-	panic("implement me")
+	registrar := ss.sched.registrar
+	return SummaryStruct{
+		RequestArgs:     ss.requestArgs,
+		DataArgs:        ss.dataArgs,
+		ModuleArgs:      ss.moduleArgs.Summary(),
+		Status:          GetStatusDescription(ss.sched.Status()),
+		Downloaders:     getModuleSummaries(registrar, module.TYPE_DOWNLOADER),
+		Analyzers:       getModuleSummaries(registrar, module.TYPE_ANALYZER),
+		Pipelines:       getModuleSummaries(registrar, module.TYPE_PIPELINE),
+		ReqBufferPool:   getBufferPoolSummary(ss.sched.reqBufferPool),
+		RespBufferPool:  getBufferPoolSummary(ss.sched.respBufferPool),
+		ItemBufferPool:  getBufferPoolSummary(ss.sched.itemBufferPool),
+		ErrorBufferPool: getBufferPoolSummary(ss.sched.errorBufferPool),
+		NumURL:          ss.sched.urlMap.Len(),
+	}
 }
 
 func (ss *mySchedSummary) String() string {
-	panic("implement me")
+	b, err := json.MarshalIndent(ss.Struct(), "", "    ")
+	if err != nil {
+		logger.Errorf("An error occurs when generating scheduler summary: %s\n", err)
+		return ""
+	}
+	return string(b)
 }
 
 // SummaryStruct 代表调度器摘要的结构。
