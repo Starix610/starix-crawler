@@ -331,7 +331,9 @@ func (sched *myScheduler) downloadOne(req *module.Request) {
 	if err != nil || m == nil {
 		errMsg := fmt.Sprintf("couldn't get a downloader: %s", err)
 		sendError(errors.New(errMsg), "", sched.errorBufferPool)
-		// 失败则将请求放回请求缓冲此
+		// 失败则将请求放回请求缓冲池
+		// TODO: 可能有bug，重新放入缓冲池会被sched.urlMap过滤掉，但问题应该不大，
+		// TODO：除了调度器首次初始化时未设置Downloader会走到这里，其他情况不可能走到这里
 		sched.sendReq(req)
 		return
 	}

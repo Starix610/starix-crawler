@@ -26,6 +26,29 @@ func (args *RequestArgs) Check() error {
 	return nil
 }
 
+// Same 用于判断两个请求相关的参数容器是否相同。
+func (args *RequestArgs) Same(another *RequestArgs) bool {
+	if another == nil {
+		return false
+	}
+	if another.MaxDepth != args.MaxDepth {
+		return false
+	}
+	anotherDomains := another.AcceptedDomains
+	anotherDomainsLen := len(anotherDomains)
+	if anotherDomainsLen != len(args.AcceptedDomains) {
+		return false
+	}
+	if anotherDomainsLen > 0 {
+		for i, domain := range anotherDomains {
+			if domain != args.AcceptedDomains[i] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // DataArgs 代表数据相关的参数容器的类型。
 type DataArgs struct {
 	// ReqBufferCap 代表请求缓冲器的容量。
