@@ -1,7 +1,7 @@
 package downloader
 
 import (
-	"helper/log"
+	"gopcp.v2/helper/log"
 	"net/http"
 	"starix-crawler/module"
 	"starix-crawler/module/stub"
@@ -10,7 +10,7 @@ import (
 // logger 代表日志记录器。
 var logger = log.DLogger()
 
-//下载器的实现类型
+// 下载器的实现类型
 type myDownloader struct {
 	//组件基础实例
 	stub.ModuleInternal

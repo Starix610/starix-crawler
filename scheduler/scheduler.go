@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"helper/log"
+	"gopcp.v2/helper/log"
 	"net/http"
 	"starix-crawler/module"
 	"starix-crawler/tookit/buffer"
@@ -16,7 +16,7 @@ import (
 // logger 代表日志记录器。
 var logger = log.DLogger()
 
-//调度器的接口类型
+// 调度器的接口类型
 type Scheduler interface {
 	//Init用于初始化调度器。
 	//参数requestArgs代表请求相关的参数
@@ -499,7 +499,7 @@ func sendItem(item module.Item, itemBufferPool buffer.Pool) bool {
 }
 
 // sendReq会向请求缓冲池发送请求。
-//不符合要求的请求会被过滤掉
+// 不符合要求的请求会被过滤掉
 func (sched *myScheduler) sendReq(req *module.Request) bool {
 	if req == nil {
 		return false

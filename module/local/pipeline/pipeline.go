@@ -2,7 +2,7 @@ package pipeline
 
 import (
 	"fmt"
-	"helper/log"
+	"gopcp.v2/helper/log"
 	"starix-crawler/module"
 	"starix-crawler/module/stub"
 )
@@ -10,7 +10,7 @@ import (
 // logger 代表日志记录器。
 var logger = log.DLogger()
 
-//条目处理管道的实现类型
+// 条目处理管道的实现类型
 type myPipeline struct {
 	//组件基础实例
 	stub.ModuleInternal

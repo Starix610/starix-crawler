@@ -2,7 +2,7 @@ package analyzer
 
 import (
 	"fmt"
-	"helper/log"
+	"gopcp.v2/helper/log"
 	"starix-crawler/module"
 	"starix-crawler/module/stub"
 	"starix-crawler/tookit/reader"

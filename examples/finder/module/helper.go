@@ -2,7 +2,7 @@ package internal
 
 import (
 	"fmt"
-	"helper/log"
+	"gopcp.v2/helper/log"
 	"os"
 	"path/filepath"
 )

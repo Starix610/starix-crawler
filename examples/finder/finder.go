@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"helper/log"
+	"gopcp.v2/helper/log"
 	"net/http"
 	"os"
 	"strings"
